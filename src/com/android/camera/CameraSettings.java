@@ -22,10 +22,13 @@ import android.content.SharedPreferences;
 import android.hardware.Camera.Parameters;
 import android.hardware.Camera.Size;
 import android.media.CamcorderProfile;
+import android.media.EncoderCapabilities;
+import android.media.EncoderCapabilities.VideoEncoderCap;
 import android.preference.PreferenceManager;
 import android.util.Log;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -145,10 +148,14 @@ public class CameraSettings {
         ListPreference exposure = group.findPreference(KEY_EXPOSURE);
         ListPreference videoFlashMode =
                 group.findPreference(KEY_VIDEOCAMERA_FLASH_MODE);
+        ListPreference videoEncoder = group.findPreference(KEY_VIDEO_ENCODER);
 
         // Since the screen could be loaded from different resources, we need
         // to check if the preference is available here
         if (videoQuality != null) {
+            if (!CameraSwitch.SWITCH_CAMERA_MAIN.equals(CameraHolder.instance().getCameraNode())) {
+        //        videoQuality.filterUnsupported(Arrays.asList(VIDEO_QUALITY_LOW, VIDEO_QUALITY_MMS, VIDEO_QUALITY_YOUTUBE));
+            }
             // Modify video duration settings.
             // The first entry is for MMS video duration, and we need to fill
             // in the device-dependent value (in seconds).
@@ -164,10 +171,34 @@ public class CameraSettings {
         }
 
         // Filter out unsupported settings / options
-        if (videoSize != null) {
-            filterUnsupportedOptions(group, videoSize, sizeListToStringList(
-                    mParameters.getSupportedPreviewSizes()));
+        if (videoSize != null && videoEncoder != null) {
+            final int selectedEncoder = VideoCamera.VIDEO_ENCODER_TABLE.get(videoEncoder.getValue());
+            VideoEncoderCap cap = null;
+            for (VideoEncoderCap vc : EncoderCapabilities.getVideoEncoders()) {
+                if (vc.mCodec == selectedEncoder) {
+                    cap = vc;
+                    break;
+                }
+            }
+            if (cap == null) {
+                Log.wtf(TAG, "Unknown encoder! " + selectedEncoder);
+            }
+
+            final List<Size> validSizesForEncoder = new ArrayList<Size>();
+            for (Size size : mParameters.getSupportedPreviewSizes()) {
+                if (!CameraSwitch.SWITCH_CAMERA_MAIN.equals(CameraHolder.instance().getCameraNode())) {
+                    // Terrible hack, this should be done another way.
+                    if (size.width > 640 || size.height > 480) {
+                        continue;
+                    }
+                }
+                if (size.width <= cap.mMaxFrameWidth && size.height <= cap.mMaxFrameHeight) {
+                    validSizesForEncoder.add(size);
+                }
+            }
+            filterUnsupportedOptions(group, videoSize, sizeListToStringList(validSizesForEncoder));
         }
+
         if (pictureSize != null) {
             filterUnsupportedOptions(group, pictureSize, sizeListToStringList(
                     mParameters.getSupportedPictureSizes()));
@@ -263,6 +294,11 @@ public class CameraSettings {
         if (pref.findIndexOfValue(value) == NOT_FOUND) {
             pref.setValueIndex(0);
         }
+    }
+
+    private static Size stringToSize(String sizeStr) {
+        String[] dim = sizeStr.split("x");
+        return CameraHolder.instance().getCameraDevice().new Size(Integer.parseInt(dim[0]), Integer.parseInt(dim[1]));
     }
 
     private static List<String> sizeListToStringList(List<Size> sizes) {

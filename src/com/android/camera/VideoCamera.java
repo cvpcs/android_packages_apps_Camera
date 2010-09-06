@@ -37,7 +37,6 @@ import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.hardware.Camera.Parameters;
 import android.hardware.Camera.Size;
-import android.hardware.CameraSwitch;
 import android.media.CamcorderProfile;
 import android.media.EncoderCapabilities;
 import android.media.EncoderCapabilities.AudioEncoderCap;

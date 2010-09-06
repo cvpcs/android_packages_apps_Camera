@@ -154,9 +154,6 @@ public class CameraSettings {
         // Since the screen could be loaded from different resources, we need
         // to check if the preference is available here
         if (videoQuality != null) {
-            if (!CameraSwitch.SWITCH_CAMERA_MAIN.equals(CameraHolder.instance().getCameraNode())) {
-        //        videoQuality.filterUnsupported(Arrays.asList(VIDEO_QUALITY_LOW, VIDEO_QUALITY_MMS, VIDEO_QUALITY_YOUTUBE));
-            }
             // Modify video duration settings.
             // The first entry is for MMS video duration, and we need to fill
             // in the device-dependent value (in seconds).
@@ -193,12 +190,6 @@ public class CameraSettings {
 
             final List<Size> validSizesForEncoder = new ArrayList<Size>();
             for (Size size : mParameters.getSupportedPreviewSizes()) {
-                if (!CameraSwitch.SWITCH_CAMERA_MAIN.equals(CameraHolder.instance().getCameraNode())) {
-                    // Terrible hack, this should be done another way.
-                    if (size.width > 640 || size.height > 480) {
-                        continue;
-                    }
-                }
                 if (size.width <= cap.mMaxFrameWidth && size.height <= cap.mMaxFrameHeight) {
                     validSizesForEncoder.add(size);
                 }

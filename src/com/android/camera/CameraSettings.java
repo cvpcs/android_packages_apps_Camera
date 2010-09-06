@@ -149,6 +149,7 @@ public class CameraSettings {
         ListPreference videoFlashMode =
                 group.findPreference(KEY_VIDEOCAMERA_FLASH_MODE);
         ListPreference videoEncoder = group.findPreference(KEY_VIDEO_ENCODER);
+        ListPreference audioEncoder = group.findPreference(KEY_AUDIO_ENCODER);
 
         // Since the screen could be loaded from different resources, we need
         // to check if the preference is available here
@@ -171,9 +172,13 @@ public class CameraSettings {
         }
 
         // Filter out unsupported settings / options
+        if (audioEncoder != null) {
+            filterUnsupportedOptions(group, audioEncoder, new ArrayList<String>(VideoCamera.AUDIO_ENCODER_TABLE.keySet()));
+        }
+
         if (videoSize != null && videoEncoder != null) {
             filterUnsupportedOptions(group, videoEncoder, new ArrayList<String>(VideoCamera.VIDEO_ENCODER_TABLE.keySet()));
-            
+
             final int selectedEncoder = VideoCamera.VIDEO_ENCODER_TABLE.get(videoEncoder.getValue());
             VideoEncoderCap cap = null;
             for (VideoEncoderCap vc : EncoderCapabilities.getVideoEncoders()) {

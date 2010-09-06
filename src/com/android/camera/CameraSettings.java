@@ -66,6 +66,11 @@ public class CameraSettings {
 
     public static final String DEFAULT_VIDEO_QUALITY_VALUE = "high";
 
+    public static final String KEY_VIDEO_SIZE = "pref_camera_videosize_key";
+    public static final String KEY_VIDEO_ENCODER = "pref_camera_videoencoder_key";
+    public static final String KEY_AUDIO_ENCODER = "pref_camera_audioencoder_key";
+    public static final String KEY_VIDEO_DURATION = "pref_camera_video_duration_key";
+
     // MMS video length
     public static final int DEFAULT_VIDEO_DURATION_VALUE = -1;
 

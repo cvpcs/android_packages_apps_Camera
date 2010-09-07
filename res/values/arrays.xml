@@ -106,7 +106,7 @@
         <item>@drawable/ic_viewfinder_video_quality_low</item>
         <item>@drawable/ic_viewfinder_video_quality_mms</item>
         <item>@drawable/ic_viewfinder_video_quality_youtube</item>
-        <item>@drawable/ic_menuselect_on</item>
+        <item>@drawable/ic_viewfinder_video_quality_custom</item>
     </array>
 
     <!-- Camera Preferences Picture size dialog box entries -->

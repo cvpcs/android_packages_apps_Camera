@@ -1703,9 +1703,12 @@ public class VideoCamera extends NoSearchActivity
         if (sizeChanged) {
             // It is assumed media recorder is released before
             // onSharedPreferenceChanged, so we can close the camera here.
+            mCameraDevice.stopPreview();
+            releaseMediaRecorder();
             closeCamera();
             try {
                 resizeForPreviewAspectRatio();
+                mHandler.sendEmptyMessage(RELOAD_HUD);
                 startPreview(); // Parameters will be set in startPreview().
             } catch (CameraHardwareException e) {
                 showCameraBusyAndFinish();

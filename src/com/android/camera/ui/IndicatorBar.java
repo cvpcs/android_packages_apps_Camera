@@ -23,12 +23,12 @@ import android.view.MotionEvent;
 import android.view.View.MeasureSpec;
 import android.view.animation.AlphaAnimation;
 
-public class IndicatorBar extends GLView {
+class IndicatorBar extends GLView {
 
     public static final int INDEX_NONE = -1;
 
     private NinePatchTexture mBackground;
-    private NinePatchTexture mHighlight;
+    private Texture mHighlight;
     private int mSelectedIndex = INDEX_NONE;
 
     private OnItemSelectedListener mSelectedListener;
@@ -39,15 +39,14 @@ public class IndicatorBar extends GLView {
     private class Background extends GLView {
         @Override
         protected void render(GLRootView root, GL11 gl) {
-            mBackground.setSize(getWidth(), getHeight());
-            mBackground.draw(root, 0, 0);
+            mBackground.draw(root, 0, 0, getWidth(), getHeight());
 
             if (mActivated && mSelectedIndex != INDEX_NONE
                     && mHighlight != null) {
                 Rect bounds = IndicatorBar.this.getComponent(
                         mSelectedIndex + 1).mBounds;
-                mHighlight.setSize(bounds.width(), bounds.height());
-                mHighlight.draw(root, bounds.left, bounds.top);
+                mHighlight.draw(root, bounds.left, bounds.top,
+                        bounds.width(), bounds.height());
             }
         }
     }
@@ -85,7 +84,7 @@ public class IndicatorBar extends GLView {
         invalidate();
     }
 
-    public void setHighlight(NinePatchTexture highlight) {
+    public void setHighlight(Texture highlight) {
         if (mHighlight == highlight) return;
         mHighlight = highlight;
         invalidate();

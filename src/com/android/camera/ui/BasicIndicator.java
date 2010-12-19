@@ -19,12 +19,12 @@ package com.android.camera.ui;
 import android.content.Context;
 
 import com.android.camera.IconListPreference;
-import com.android.camera.PreferenceGroup;
 import com.android.camera.R;
 import com.android.camera.Util;
 import com.android.camera.ui.GLListView.OnItemSelectedListener;
 
-public class BasicIndicator extends AbstractIndicator {
+class BasicIndicator extends AbstractIndicator {
+    private static final int COLOR_OPTION_ITEM_HIGHLIGHT = 0xFF181818;
 
     private final ResourceTexture mIcon[];
     private final IconListPreference mPreference;
@@ -33,8 +33,7 @@ public class BasicIndicator extends AbstractIndicator {
     private PreferenceAdapter mModel;
     private String mOverride;
 
-    public BasicIndicator(Context context,
-            PreferenceGroup group, IconListPreference preference) {
+    public BasicIndicator(Context context, IconListPreference preference) {
         super(context);
         mPreference = preference;
         mIcon = new ResourceTexture[preference.getLargeIconIds().length];
@@ -72,8 +71,8 @@ public class BasicIndicator extends AbstractIndicator {
         if (mPopupContent == null) {
             Context context = getGLRootView().getContext();
             mPopupContent = new GLListView(context);
-            mPopupContent.setHighLight(new NinePatchTexture(
-                    context, R.drawable.optionitem_highlight));
+            mPopupContent.setHighLight(
+                    new ColorTexture(COLOR_OPTION_ITEM_HIGHLIGHT));
             mPopupContent.setScroller(new NinePatchTexture(
                     context, R.drawable.scrollbar_handle_vertical));
             mModel = new PreferenceAdapter(context, mPreference);

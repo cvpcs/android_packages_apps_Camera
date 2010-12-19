@@ -26,33 +26,40 @@ import android.view.animation.ScaleAnimation;
 
 import javax.microedition.khronos.opengles.GL11;
 
-public class PopupWindow extends GLView {
+class PopupWindow extends GLView {
 
-    protected Texture mAnchor;
+    protected BitmapTexture mAnchor;
     protected int mAnchorOffset;
 
     protected int mAnchorPosition;
     private final RotatePane mRotatePane = new RotatePane();
     private RawTexture mBackupTexture;
 
-    protected FrameTexture mBackground;
+    protected Texture mBackground;
+    private boolean mUsingStencil;
 
     public PopupWindow() {
         super.addComponent(mRotatePane);
     }
 
-    public void setBackground(FrameTexture background) {
+    @Override
+    protected void onAttachToRoot(GLRootView root) {
+        super.onAttachToRoot(root);
+        mUsingStencil = root.getEGLConfigChooser().getStencilBits() > 0;
+    }
+
+    public void setBackground(Texture background) {
         if (background == mBackground) return;
         mBackground = background;
-        if (background != null) {
-            setPaddings(mBackground.getPaddings());
+        if (background != null && background instanceof NinePatchTexture) {
+            setPaddings(((NinePatchTexture) mBackground).getPaddings());
         } else {
             setPaddings(0, 0, 0, 0);
         }
         invalidate();
     }
 
-    public void setAnchor(Texture anchor, int offset) {
+    public void setAnchor(BitmapTexture anchor, int offset) {
         mAnchor = anchor;
         mAnchorOffset = offset;
     }
@@ -102,8 +109,32 @@ public class PopupWindow extends GLView {
         mAnchorPosition = yoffset;
     }
 
-    @Override
-    protected void renderBackground(GLRootView root, GL11 gl) {
+    private void renderBackgroundWithStencil(GLRootView root, GL11 gl) {
+        int width = getWidth();
+        int height = getHeight();
+        int aWidth = mAnchor.getWidth();
+        int aHeight = mAnchor.getHeight();
+
+        Rect p = mPaddings;
+        int aXoffset = width - aWidth;
+        int aYoffset = Math.max(p.top, mAnchorPosition - aHeight / 2);
+        aYoffset = Math.min(aYoffset, height - p.bottom - aHeight);
+
+        if (mAnchor != null) {
+            gl.glStencilOp(GL11.GL_KEEP, GL11.GL_KEEP, GL11.GL_REPLACE);
+            gl.glStencilFunc(GL11.GL_ALWAYS, 1, 1);
+            mAnchor.draw(root, aXoffset, aYoffset);
+            gl.glStencilFunc(GL11.GL_NOTEQUAL, 1, 1);
+            gl.glStencilOp(GL11.GL_KEEP, GL11.GL_KEEP, GL11.GL_KEEP);
+        }
+
+        if (mBackground != null) {
+            mBackground.draw(root, 0, 0,
+                    width - aWidth + mAnchorOffset, height);
+        }
+    }
+
+    private void renderBackgroundWithoutStencil(GLRootView root, GL11 gl) {
         int width = getWidth();
         int height = getHeight();
         int aWidth = mAnchor.getWidth();
@@ -133,13 +164,22 @@ public class PopupWindow extends GLView {
         }
 
         if (mBackground != null) {
-            mBackground.setSize(width - aWidth + mAnchorOffset, height);
-            mBackground.draw(root, 0, 0);
+            mBackground.draw(root, 0, 0,
+                    width - aWidth + mAnchorOffset, height);
         }
 
         gl.glBlendFunc(GL11.GL_ONE, GL11.GL_ZERO);
-        backup.draw(root, aXoffset, aYoffset, aWidth, aHeight, 1);
+        backup.drawBack(root, aXoffset, aYoffset, aWidth, aHeight);
         gl.glBlendFunc(GL11.GL_ONE, GL11.GL_ONE_MINUS_SRC_ALPHA);
+    }
+
+    @Override
+    protected void renderBackground(GLRootView root, GL11 gl) {
+        if (mUsingStencil) {
+            renderBackgroundWithStencil(root, gl);
+        } else {
+            renderBackgroundWithoutStencil(root, gl);
+        }
     }
 
     public void setContent(GLView content) {
@@ -190,5 +230,4 @@ public class PopupWindow extends GLView {
                 break;
         }
     }
-
 }

@@ -34,7 +34,7 @@ import com.android.camera.Util;
 
 import javax.microedition.khronos.opengles.GL11;
 
-public class GLListView extends GLView {
+class GLListView extends GLView {
     @SuppressWarnings("unused")
     private static final String TAG = "GLListView";
     private static final int INDEX_NONE = -1;
@@ -48,7 +48,7 @@ public class GLListView extends GLView {
     private int mHighlightIndex = INDEX_NONE;
     private GLView mHighlightView;
 
-    private NinePatchTexture mHighLight;
+    private Texture mHighLight;
     private NinePatchTexture mScrollbar;
 
     private int mVisibleStart = 0; // inclusive
@@ -77,13 +77,30 @@ public class GLListView extends GLView {
 
     public GLListView(Context context) {
         mScroller = new Scroller(context);
-    }
+        mHandler = new Handler() {
+            @Override
+            public void handleMessage(Message msg) {
+                GLRootView root = getGLRootView();
+                if (root != null) {
+                    synchronized (root) {
+                        handleMessageLocked(msg);
+                    }
+                } else {
+                    handleMessageLocked(msg);
+                }
+            }
 
-    private final Runnable mHideScrollBar = new Runnable() {
-        public void run() {
-            setScrollBarVisible(false);
-        }
-    };
+            private void handleMessageLocked(Message msg) {
+                switch(msg.what) {
+                    case HIDE_SCROLL_BAR:
+                        setScrollBarVisible(false);
+                        break;
+                }
+            }
+        };
+        mGestureDetector = new GestureDetector(
+                context, new MyGestureListener(), mHandler);
+    }
 
     @Override
     protected void onVisibilityChanged(int visibility) {
@@ -94,26 +111,6 @@ public class GLListView extends GLView {
                     HIDE_SCROLL_BAR, SCROLL_BAR_TIMEOUT);
         }
     }
-
-    @Override
-    protected void onAttachToRoot(GLRootView root) {
-        super.onAttachToRoot(root);
-        mHandler = new Handler(root.getTimerLooper()) {
-            @Override
-            public void handleMessage(Message msg) {
-                GLRootView root = getGLRootView();
-                switch(msg.what) {
-                    case HIDE_SCROLL_BAR:
-                        root.queueEvent(mHideScrollBar);
-                        break;
-                }
-            }
-        };
-        mGestureDetector =
-            new GestureDetector(root.getContext(),
-            new MyGestureListener(), mHandler);
-    }
-
 
     private void setScrollBarVisible(boolean visible) {
         if (mScrollBarVisible == visible || mScrollbar == null) return;
@@ -128,7 +125,7 @@ public class GLListView extends GLView {
         invalidate();
     }
 
-    public void setHighLight(NinePatchTexture highLight) {
+    public void setHighLight(Texture highLight) {
         mHighLight = highLight;
     }
 
@@ -143,13 +140,13 @@ public class GLListView extends GLView {
     }
 
     private boolean drawWithAnimation(GLRootView root,
-            Texture texture, int x, int y, Animation anim) {
+            Texture texture, int x, int y, int w, int h, Animation anim) {
         long now = root.currentAnimationTimeMillis();
         Transformation temp = root.obtainTransformation();
         boolean more = anim.getTransformation(now, temp);
         Transformation transformation = root.pushTransform();
         transformation.compose(temp);
-        texture.draw(root, x, y);
+        texture.draw(root, x, y, w, h);
         invalidate();
         root.popTransform();
         return more;
@@ -164,26 +161,27 @@ public class GLListView extends GLView {
             if (mHighLight != null) {
                 int width = bounds.width();
                 int height = bounds.height();
-                mHighLight.setSize(width, height);
                 mHighLight.draw(root,
-                        bounds.left - mScrollX, bounds.top - mScrollY);
+                        bounds.left - mScrollX, bounds.top - mScrollY,
+                        width, height);
             }
         }
         super.render(root, gl);
         root.clearClip();
 
         if (mScrollBarAnimation != null || mScrollBarVisible) {
-            int width = mScrollbar.getIntrinsicWidth();
+            int width = mScrollbar.getWidth();
             int height = getHeight() * getHeight() / mScrollHeight;
             int yoffset = mScrollY * getHeight() / mScrollHeight;
-            mScrollbar.setSize(width, height);
             if (mScrollBarAnimation != null) {
-                if (!drawWithAnimation(root, mScrollbar,
-                        getWidth() - width, yoffset, mScrollBarAnimation)) {
+                if (!drawWithAnimation(
+                        root, mScrollbar, getWidth() - width, yoffset,
+                        width, height, mScrollBarAnimation)) {
                     mScrollBarAnimation = null;
                 }
             } else {
-                mScrollbar.draw(root, getWidth() - width, yoffset);
+                mScrollbar.draw(
+                        root, getWidth() - width, yoffset, width, height);
             }
         }
         if (mScroller.computeScrollOffset()) {
@@ -293,11 +291,12 @@ public class GLListView extends GLView {
 
         switch (event.getAction()) {
             case MotionEvent.ACTION_DOWN:
+                mIsPressed = true;
                 mHandler.removeMessages(HIDE_SCROLL_BAR);
                 setScrollBarVisible(mScrollHeight > getHeight());
-                break;
+
+                // fallthrough: we need to highlight the item which is pressed
             case MotionEvent.ACTION_MOVE:
-                mIsPressed = true;
                 if (!mScrollable) {
                     findAndSetHighlightItem((int) event.getY());
                 }
@@ -372,13 +371,8 @@ public class GLListView extends GLView {
 
         @Override
         public void onShowPress(MotionEvent e) {
-            if (!mScrollable) return;
-            final int y = (int) e.getY();
-            getGLRootView().queueEvent(new Runnable() {
-                public void run() {
-                    if (mIsPressed) findAndSetHighlightItem(y);
-                }
-            });
+            if (!mScrollable || !mIsPressed) return;
+            findAndSetHighlightItem((int) e.getY());
         }
 
         @Override

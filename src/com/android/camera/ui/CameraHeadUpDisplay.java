@@ -25,14 +25,25 @@ import com.android.camera.PreferenceGroup;
 
 public class CameraHeadUpDisplay extends HeadUpDisplay {
 
-    protected static final String TAG = "CamcoderHeadUpDisplay";
+    private static final String TAG = "CamcoderHeadUpDisplay";
 
     private OtherSettingsIndicator mOtherSettings;
     private GpsIndicator mGpsIndicator;
     private ZoomIndicator mZoomIndicator;
+    private Context mContext;
+    private float[] mInitialZoomRatios;
+    private int mInitialOrientation;
 
     public CameraHeadUpDisplay(Context context) {
         super(context);
+        mContext = context;
+    }
+
+    public void initialize(Context context, PreferenceGroup group,
+            float[] initialZoomRatios, int initialOrientation) {
+        mInitialZoomRatios = initialZoomRatios;
+        mInitialOrientation = initialOrientation;
+        super.initialize(context, group);
     }
 
     @Override
@@ -59,39 +70,71 @@ public class CameraHeadUpDisplay extends HeadUpDisplay {
         mIndicatorBar.addComponent(mOtherSettings);
 
         mGpsIndicator = new GpsIndicator(
-                context, group, (IconListPreference)
+                context, (IconListPreference)
                 group.findPreference(CameraSettings.KEY_RECORD_LOCATION));
         mIndicatorBar.addComponent(mGpsIndicator);
 
         addIndicator(context, group, CameraSettings.KEY_WHITE_BALANCE);
         addIndicator(context, group, CameraSettings.KEY_FLASH_MODE);
 
-        mZoomIndicator = new ZoomIndicator(context);
-        mIndicatorBar.addComponent(mZoomIndicator);
+        if (mInitialZoomRatios != null) {
+            mZoomIndicator = new ZoomIndicator(mContext);
+            mZoomIndicator.setZoomRatios(mInitialZoomRatios);
+            mIndicatorBar.addComponent(mZoomIndicator);
+        } else {
+            mZoomIndicator = null;
+        }
+
+        addIndicator(context, group, CameraSettings.KEY_CAMERA_ID);
+
+        mIndicatorBar.setOrientation(mInitialOrientation);
     }
 
-    public void setZoomListener(ZoomController.ZoomListener listener) {
+    public void setZoomListener(ZoomControllerListener listener) {
+        // The rendering thread won't access listener variable, so we don't
+        // need to do concurrency protection here
         mZoomIndicator.setZoomListener(listener);
     }
 
     public void setZoomIndex(int index) {
-        mZoomIndicator.setZoomIndex(index);
+        GLRootView root = getGLRootView();
+        if (root != null) {
+            synchronized (root) {
+                mZoomIndicator.setZoomIndex(index);
+            }
+        } else {
+            mZoomIndicator.setZoomIndex(index);
+        }
     }
 
     public void setGpsHasSignal(final boolean hasSignal) {
         GLRootView root = getGLRootView();
         if (root != null) {
-            root.queueEvent(new Runnable() {
-                public void run() {
-                    mGpsIndicator.setHasSignal(hasSignal);
-                }
-            });
+            synchronized (root) {
+                mGpsIndicator.setHasSignal(hasSignal);
+            }
         } else {
             mGpsIndicator.setHasSignal(hasSignal);
         }
     }
 
+    /**
+     * Sets the zoom rations the camera driver provides. This methods must be
+     * called before <code>setZoomListener()</code> and
+     * <code>setZoomIndex()</code>
+     */
     public void setZoomRatios(float[] zoomRatios) {
+        GLRootView root = getGLRootView();
+        if (root != null) {
+            synchronized(root) {
+                setZoomRatiosLocked(zoomRatios);
+            }
+        } else {
+            setZoomRatiosLocked(zoomRatios);
+        }
+    }
+
+    private void setZoomRatiosLocked(float[] zoomRatios) {
         mZoomIndicator.setZoomRatios(zoomRatios);
     }
 }

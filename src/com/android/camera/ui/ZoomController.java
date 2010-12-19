@@ -30,7 +30,7 @@ import java.util.Arrays;
 
 import javax.microedition.khronos.opengles.GL11;
 
-public class ZoomController extends GLView {
+class ZoomController extends GLView {
     private static final int LABEL_COLOR = Color.WHITE;
 
     private static final DecimalFormat sZoomFormat = new DecimalFormat("#.#x");
@@ -49,9 +49,9 @@ public class ZoomController extends GLView {
     private static float sToleranceRadius;
 
     private static NinePatchTexture sBackground;
-    private static Texture sSlider;
-    private static Texture sTickMark;
-    private static Texture sFineTickMark;
+    private static BitmapTexture sSlider;
+    private static BitmapTexture sTickMark;
+    private static BitmapTexture sFineTickMark;
 
     private StringTexture mTickLabels[];
     private float mRatios[];
@@ -68,11 +68,7 @@ public class ZoomController extends GLView {
     private int mSliderLeft;
     private int mSliderPosition = INVALID_POSITION;
     private float mValueGap;
-    private ZoomListener mZoomListener;
-
-    public interface ZoomListener {
-        public void onZoomChanged(int index, float ratio, boolean isMoving);
-    }
+    private ZoomControllerListener mZoomListener;
 
     public ZoomController(Context context) {
         initializeStaticVariable(context);
@@ -203,7 +199,7 @@ public class ZoomController extends GLView {
                 + Math.max(sSlider.getHeight(), mMaxLabelHeight);
 
         int width = mMaxLabelWidth + sHorizontalPadding + sTickMark.getWidth()
-                + sHorizontalPadding + sBackground.getIntrinsicWidth();
+                + sHorizontalPadding + sBackground.getWidth();
         height = Math.max(sMinimalHeight, height);
 
         new MeasureHelper(this)
@@ -225,14 +221,14 @@ public class ZoomController extends GLView {
         int xoffset = mPaddings.left + mMaxLabelWidth;
         float yoffset = mSliderBottom - sSlider.getHeight() / 2;
         for (int i = 0, n = mTickLabels.length; i < n; ++i) {
-            Texture t = mTickLabels[i];
+            BitmapTexture t = mTickLabels[i];
             t.draw(root, xoffset - t.getWidth(),
                     (int) (yoffset - t.getHeight() / 2));
             yoffset -= labelStep * gap;
         }
 
         // render the main tick marks
-        Texture tickMark = sTickMark;
+        BitmapTexture tickMark = sTickMark;
         xoffset += sHorizontalPadding;
         yoffset = mSliderBottom - sSlider.getHeight() / 2;
         int halfHeight = tickMark.getHeight() / 2;
@@ -260,8 +256,7 @@ public class ZoomController extends GLView {
         int left = mSliderLeft;
         int bottom = mSliderBottom;
         int top = mSliderTop;
-        sBackground.setSize(sBackground.getIntrinsicWidth(), bottom - top);
-        sBackground.draw(root, left, top);
+        sBackground.draw(root, left, top, sBackground.getWidth(), bottom - top);
 
         if (mSliderPosition == INVALID_POSITION) {
             sSlider.draw(root, left, (int)
@@ -271,7 +266,7 @@ public class ZoomController extends GLView {
         }
     }
 
-    public void setZoomListener(ZoomListener listener) {
+    public void setZoomListener(ZoomControllerListener listener) {
         mZoomListener = listener;
     }
 

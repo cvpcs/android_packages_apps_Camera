@@ -19,6 +19,8 @@ package com.android.camera;
 import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.SharedPreferences.Editor;
+import android.hardware.Camera.CameraInfo;
 import android.hardware.Camera.Parameters;
 import android.hardware.Camera.Size;
 import android.media.CamcorderProfile;
@@ -38,6 +40,7 @@ public class CameraSettings {
     private static final int NOT_FOUND = -1;
 
     public static final String KEY_VERSION = "pref_version_key";
+    public static final String KEY_LOCAL_VERSION = "pref_local_version_key";
     public static final String KEY_RECORD_LOCATION = RecordLocationPreference.KEY;
     public static final String KEY_VIDEO_QUALITY = "pref_video_quality_key";
     public static final String KEY_PICTURE_SIZE = "pref_camera_picturesize_key";
@@ -48,11 +51,8 @@ public class CameraSettings {
     public static final String KEY_COLOR_EFFECT = "pref_camera_coloreffect_key";
     public static final String KEY_WHITE_BALANCE = "pref_camera_whitebalance_key";
     public static final String KEY_SCENE_MODE = "pref_camera_scenemode_key";
-    public static final String KEY_QUICK_CAPTURE = "pref_camera_quickcapture_key";
     public static final String KEY_EXPOSURE = "pref_camera_exposure_key";
-
-    public static final String QUICK_CAPTURE_ON = "on";
-    public static final String QUICK_CAPTURE_OFF = "off";
+    public static final String KEY_CAMERA_ID = "pref_camera_id_key";
 
     private static final String VIDEO_QUALITY_HIGH = "high";
     private static final String VIDEO_QUALITY_MMS = "mms";
@@ -61,6 +61,7 @@ public class CameraSettings {
     public static final String EXPOSURE_DEFAULT_VALUE = "0";
 
     public static final int CURRENT_VERSION = 4;
+    public static final int CURRENT_LOCAL_VERSION = 1;
 
     // max video duration in seconds for mms and youtube.
     private static final int MMS_VIDEO_DURATION = CamcorderProfile.get(CamcorderProfile.QUALITY_LOW).duration;
@@ -82,10 +83,13 @@ public class CameraSettings {
 
     private final Context mContext;
     private final Parameters mParameters;
+    private final CameraInfo[] mCameraInfo;
 
-    public CameraSettings(Activity activity, Parameters parameters) {
+    public CameraSettings(Activity activity, Parameters parameters,
+                          CameraInfo[] cameraInfo) {
         mContext = activity;
         mParameters = parameters;
+        mCameraInfo = cameraInfo;
     }
 
     public PreferenceGroup getPreferenceGroup(int preferenceRes) {
@@ -106,10 +110,10 @@ public class CameraSettings {
         for (String candidate : context.getResources().getStringArray(
                 R.array.pref_camera_picturesize_entryvalues)) {
             if (setCameraPictureSize(candidate, supported, parameters)) {
-                SharedPreferences.Editor editor = PreferenceManager
-                        .getDefaultSharedPreferences(context).edit();
+                SharedPreferences.Editor editor = ComboPreferences
+                        .get(context).edit();
                 editor.putString(KEY_PICTURE_SIZE, candidate);
-                editor.commit();
+                editor.apply();
                 return;
             }
         }
@@ -147,6 +151,8 @@ public class CameraSettings {
         ListPreference flashMode = group.findPreference(KEY_FLASH_MODE);
         ListPreference focusMode = group.findPreference(KEY_FOCUS_MODE);
         ListPreference exposure = group.findPreference(KEY_EXPOSURE);
+        IconListPreference cameraId =
+                (IconListPreference)group.findPreference(KEY_CAMERA_ID);
         ListPreference videoFlashMode =
                 group.findPreference(KEY_VIDEOCAMERA_FLASH_MODE);
         ListPreference videoEncoder = group.findPreference(KEY_VIDEO_ENCODER);
@@ -226,10 +232,8 @@ public class CameraSettings {
             filterUnsupportedOptions(group,
                     videoFlashMode, mParameters.getSupportedFlashModes());
         }
-
-        if (exposure != null) {
-            buildExposureCompensation(group, exposure);
-        }
+        if (exposure != null) buildExposureCompensation(group, exposure);
+        if (cameraId != null) buildCameraId(group, cameraId);
     }
 
     private void buildExposureCompensation(
@@ -255,6 +259,38 @@ public class CameraSettings {
         }
         exposure.setEntries(entries);
         exposure.setEntryValues(entryValues);
+    }
+
+    private void buildCameraId(
+            PreferenceGroup group, IconListPreference cameraId) {
+        int numOfCameras = mCameraInfo.length;
+        if (numOfCameras < 2) {
+            removePreference(group, cameraId.getKey());
+            return;
+        }
+
+        CharSequence entries[] = new CharSequence[numOfCameras];
+        CharSequence entryValues[] = new CharSequence[numOfCameras];
+        int[] iconIds = new int[numOfCameras];
+        int[] largeIconIds = new int[numOfCameras];
+        for (int i = 0; i < numOfCameras; i++) {
+            entryValues[i] = Integer.toString(i);
+            if (mCameraInfo[i].facing == CameraInfo.CAMERA_FACING_FRONT) {
+                entries[i] = mContext.getString(
+                        R.string.pref_camera_id_entry_front);
+                iconIds[i] = R.drawable.ic_menuselect_camera_facing_front;
+                largeIconIds[i] = R.drawable.ic_viewfinder_camera_facing_front;
+            } else {
+                entries[i] = mContext.getString(
+                        R.string.pref_camera_id_entry_back);
+                iconIds[i] = R.drawable.ic_menuselect_camera_facing_back;
+                largeIconIds[i] = R.drawable.ic_viewfinder_camera_facing_back;
+            }
+        }
+        cameraId.setEntries(entries);
+        cameraId.setEntryValues(entryValues);
+        cameraId.setIconIds(iconIds);
+        cameraId.setLargeIconIds(largeIconIds);
     }
 
     private static boolean removePreference(PreferenceGroup group, String key) {
@@ -287,6 +323,10 @@ public class CameraSettings {
         }
 
         pref.filterUnsupported(supported);
+        if (pref.getEntries().length <= 1) {
+            removePreference(group, pref.getKey());
+            return;
+        }
 
         // Set the value to the first entry if it is invalid.
         String value = pref.getValue();
@@ -308,7 +348,20 @@ public class CameraSettings {
         return list;
     }
 
-    public static void upgradePreferences(SharedPreferences pref) {
+    public static void upgradeLocalPreferences(SharedPreferences pref) {
+        int version;
+        try {
+            version = pref.getInt(KEY_LOCAL_VERSION, 0);
+        } catch (Exception ex) {
+            version = 0;
+        }
+        if (version == CURRENT_LOCAL_VERSION) return;
+        SharedPreferences.Editor editor = pref.edit();
+        editor.putInt(KEY_LOCAL_VERSION, CURRENT_LOCAL_VERSION);
+        editor.apply();
+    }
+
+    public static void upgradeGlobalPreferences(SharedPreferences pref) {
         int version;
         try {
             version = pref.getInt(KEY_VERSION, 0);
@@ -350,7 +403,12 @@ public class CameraSettings {
             editor.remove("pref_camera_video_duration_key");
         }
         editor.putInt(KEY_VERSION, CURRENT_VERSION);
-        editor.commit();
+        editor.apply();
+    }
+
+    public static void upgradeAllPreferences(ComboPreferences pref) {
+        upgradeGlobalPreferences(pref.getGlobal());
+        upgradeLocalPreferences(pref.getLocal());
     }
 
     public static boolean getVideoQuality(String quality) {
@@ -365,5 +423,16 @@ public class CameraSettings {
             return YOUTUBE_VIDEO_DURATION * 1000;
         }
         return DEFAULT_VIDEO_DURATION * 1000;
+    }
+
+    public static int readPreferredCameraId(SharedPreferences pref) {
+        return Integer.parseInt(pref.getString(KEY_CAMERA_ID, "0"));
+    }
+
+    public static void writePreferredCameraId(SharedPreferences pref,
+            int cameraId) {
+        Editor editor = pref.edit();
+        editor.putString(KEY_CAMERA_ID, Integer.toString(cameraId));
+        editor.apply();
     }
 }

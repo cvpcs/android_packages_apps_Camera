@@ -24,7 +24,7 @@ import com.android.camera.Util;
 
 import java.util.ArrayList;
 
-public class PreferenceAdapter
+class PreferenceAdapter
         implements GLListView.Model, GLListView.OnItemSelectedListener {
 
     private static final int ICON_NONE = 0;

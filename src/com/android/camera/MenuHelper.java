@@ -21,8 +21,8 @@ import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.DialogInterface;
-import android.content.Intent;
 import android.content.DialogInterface.OnClickListener;
+import android.content.Intent;
 import android.net.Uri;
 import android.os.Environment;
 import android.os.StatFs;
@@ -32,8 +32,6 @@ import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.MenuItem.OnMenuItemClickListener;
-
-import com.android.camera.R;
 
 import java.io.Closeable;
 
@@ -58,20 +56,7 @@ public class MenuHelper {
 
     public static final int POSITION_SWITCH_CAMERA_MODE = 1;
     public static final int POSITION_GOTO_GALLERY = 2;
-    public static final int POSITION_VIEWPLAY = 3;
-    public static final int POSITION_CAPTURE_PICTURE = 4;
-    public static final int POSITION_CAPTURE_VIDEO = 5;
-    public static final int POSITION_IMAGE_SHARE = 6;
-    public static final int POSITION_IMAGE_ROTATE = 7;
-    public static final int POSITION_IMAGE_TOSS = 8;
-    public static final int POSITION_IMAGE_CROP = 9;
-    public static final int POSITION_IMAGE_SET = 10;
-    public static final int POSITION_DETAILS = 11;
-    public static final int POSITION_SHOWMAP = 12;
-    public static final int POSITION_SLIDESHOW = 13;
-    public static final int POSITION_MULTISELECT = 14;
-    public static final int POSITION_CAMERA_SETTING = 15;
-    public static final int POSITION_GALLERY_SETTING = 16;
+    public static final int POSITION_SWITCH_CAMERA_ID = 3;
 
     public static final int NO_STORAGE_ERROR = -1;
     public static final int CANNOT_STAT_ERROR = -2;
@@ -85,6 +70,8 @@ public class MenuHelper {
     public static final int RESULT_COMMON_MENU_CROP = 490;
 
     private static final int NO_ANIMATION = 0;
+    private static final String CAMERA_CLASS = "com.android.camera.Camera";
+    private static final String VIDEO_CAMERA_CLASS = "com.android.camera.VideoCamera";
 
     public static void closeSilently(Closeable c) {
         if (c != null) {
@@ -135,26 +122,34 @@ public class MenuHelper {
         item.setIcon(iconId);
     }
 
-    private static void startCameraActivity(Activity activity, String action) {
+    private static void startCameraActivity(Activity activity, String action,
+            String className) {
         Intent intent = new Intent(action);
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
         intent.addFlags(Intent.FLAG_ACTIVITY_FORWARD_RESULT);
+        intent.setClassName(activity.getPackageName(), className);
 
         // Keep the camera instance for a while.
         // This avoids re-opening the camera and saves time.
         CameraHolder.instance().keep();
 
-        activity.startActivity(intent);
+        try {
+            activity.startActivity(intent);
+        } catch (ActivityNotFoundException e) {
+            intent.setComponent(null);
+            activity.startActivity(intent);
+        }
         activity.overridePendingTransition(NO_ANIMATION, NO_ANIMATION);
     }
 
     public static void gotoVideoMode(Activity activity) {
-        startCameraActivity(activity, MediaStore.INTENT_ACTION_VIDEO_CAMERA);
+        startCameraActivity(activity, MediaStore.INTENT_ACTION_VIDEO_CAMERA,
+                VIDEO_CAMERA_CLASS);
     }
 
     public static void gotoCameraMode(Activity activity) {
-        startCameraActivity(
-                activity, MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA);
+        startCameraActivity(activity,
+                MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA, CAMERA_CLASS);
     }
 
     public static void gotoCameraImageGallery(Activity activity) {
@@ -201,6 +196,7 @@ public class MenuHelper {
             // if we can't stat the filesystem then we don't know how many
             // pictures are remaining.  it might be zero but just leave it
             // blank since we really don't know.
+            Log.e(TAG, "Fail to access sdcard", ex);
             return CANNOT_STAT_ERROR;
         }
     }

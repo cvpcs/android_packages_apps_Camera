@@ -17,16 +17,18 @@
 package com.android.camera.ui;
 
 import android.content.Context;
+import android.util.Log;
 
 import com.android.camera.R;
-import com.android.camera.ui.ZoomController.ZoomListener;
+import com.android.camera.ui.ZoomControllerListener;
 
 import java.text.DecimalFormat;
 
-public class ZoomIndicator extends AbstractIndicator {
+class ZoomIndicator extends AbstractIndicator {
     private static final DecimalFormat sZoomFormat = new DecimalFormat("#.#x");
     private static final float FONT_SIZE = 18;
     private static final int FONT_COLOR = 0xA8FFFFFF;
+    private static final int COLOR_OPTION_HEADER = 0xFF2B2B2B;
 
     protected static final String TAG = "ZoomIndicator";
 
@@ -34,7 +36,7 @@ public class ZoomIndicator extends AbstractIndicator {
 
     private ZoomController mZoomController;
     private LinearLayout mPopupContent;
-    private ZoomListener mZoomListener;
+    private ZoomControllerListener mZoomListener;
     private int mZoomIndex = 0;
     private int mDrawIndex = -1;
     private float mZoomRatios[];
@@ -53,7 +55,7 @@ public class ZoomIndicator extends AbstractIndicator {
         int n = mZoomRatios == null ? 0: mZoomRatios.length;
         for (int i = 0; i < n; ++i) {
             float value = mZoomRatios[i];
-            Texture tex = StringTexture.newInstance(
+            BitmapTexture tex = StringTexture.newInstance(
                     sZoomFormat.format(value), mFontSize, FONT_COLOR);
             if (maxWidth < tex.getWidth()) maxWidth = tex.getWidth();
             if (maxHeight < tex.getHeight()) maxHeight = tex.getHeight();
@@ -64,11 +66,11 @@ public class ZoomIndicator extends AbstractIndicator {
     }
 
     @Override
-    protected Texture getIcon() {
+    protected BitmapTexture getIcon() {
         if (mDrawIndex != mZoomIndex) {
             mDrawIndex = mZoomIndex;
             if (mTitle != null) mTitle.deleteFromGL();
-            float value = mZoomRatios == null ? 0 : mZoomRatios[mZoomIndex];
+            float value = mZoomRatios[mZoomIndex];
             mTitle = StringTexture.newInstance(
                     sZoomFormat.format(value), mFontSize, FONT_COLOR);
         }
@@ -86,8 +88,7 @@ public class ZoomIndicator extends AbstractIndicator {
             mPopupContent = new LinearLayout();
             GLOptionHeader header = new GLOptionHeader(context,
                     context.getString(R.string.zoom_control_title));
-            header.setBackground(new NinePatchTexture(
-                    context, R.drawable.optionheader_background));
+            header.setBackground(new ColorTexture(COLOR_OPTION_HEADER));
             header.setPaddings(6, 3, 6, 3);
             mPopupContent.addComponent(header);
             mPopupContent.addComponent(mZoomController);
@@ -110,10 +111,11 @@ public class ZoomIndicator extends AbstractIndicator {
 
     public void setZoomRatios(float[] ratios) {
         mZoomRatios = ratios;
-        requestLayout();
+        mDrawIndex = -1;
+        invalidate();
     }
 
-    private class MyZoomListener implements ZoomController.ZoomListener {
+    private class MyZoomListener implements ZoomControllerListener {
         public void onZoomChanged(int index, float value, boolean isMoving) {
             if (mZoomListener != null) {
                 mZoomListener.onZoomChanged(index, value, isMoving);
@@ -128,7 +130,7 @@ public class ZoomIndicator extends AbstractIndicator {
         invalidate();
     }
 
-    public void setZoomListener(ZoomListener listener) {
+    public void setZoomListener(ZoomControllerListener listener) {
         mZoomListener = listener;
     }
 

@@ -30,6 +30,7 @@ import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.hardware.Camera.CameraInfo;
 import android.hardware.Camera.Parameters;
 import android.hardware.Camera.PictureCallback;
 import android.hardware.Camera.Size;
@@ -45,10 +46,10 @@ import android.os.Bundle;
 import android.os.Debug;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.Message;
 import android.os.MessageQueue;
 import android.os.SystemClock;
-import android.preference.PreferenceManager;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.util.AttributeSet;
@@ -76,7 +77,7 @@ import com.android.camera.gallery.IImageList;
 import com.android.camera.ui.CameraHeadUpDisplay;
 import com.android.camera.ui.GLRootView;
 import com.android.camera.ui.HeadUpDisplay;
-import com.android.camera.ui.ZoomController;
+import com.android.camera.ui.ZoomControllerListener;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -120,7 +121,6 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
     private static final int SCREEN_DELAY = 2 * 60 * 1000;
     private static final int FOCUS_BEEP_VOLUME = 100;
 
-
     private static final int ZOOM_STOPPED = 0;
     private static final int ZOOM_START = 1;
     private static final int ZOOM_STOPPING = 2;
@@ -134,9 +134,12 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
     private Parameters mParameters;
     private Parameters mInitialParams;
 
-    private OrientationEventListener mOrientationListener;
-    private int mLastOrientation = 0;  // No rotation (landscape) by default.
-    private SharedPreferences mPreferences;
+    private MyOrientationEventListener mOrientationListener;
+    // The device orientation in degrees. Default is unknown.
+    private int mOrientation = OrientationEventListener.ORIENTATION_UNKNOWN;
+    // The orientation compensation for icons and thumbnails.
+    private int mOrientationCompensation = 0;
+    private ComboPreferences mPreferences;
 
     private static final int IDLE = 1;
     private static final int SNAPSHOT_IN_PROGRESS = 2;
@@ -227,8 +230,11 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
     private String mSceneMode;
 
     private final Handler mHandler = new MainHandler();
-    private boolean mQuickCapture;
     private CameraHeadUpDisplay mHeadUpDisplay;
+
+    // multiple cameras support
+    private int mNumberOfCameras;
+    private int mCameraId;
 
     /**
      * This Handler is used to post message back onto the main thread of the
@@ -275,7 +281,7 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
         if (!CameraSettings.EXPOSURE_DEFAULT_VALUE.equals(value)) {
             Editor editor = mPreferences.edit();
             editor.putString(CameraSettings.KEY_EXPOSURE, "0");
-            editor.commit();
+            editor.apply();
             if (mHeadUpDisplay != null) {
                 mHeadUpDisplay.reloadPreferences();
             }
@@ -300,30 +306,7 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
 
         // Create orientation listenter. This should be done first because it
         // takes some time to get first orientation.
-        mOrientationListener = new OrientationEventListener(Camera.this) {
-            @Override
-            public void onOrientationChanged(int orientation) {
-                // We keep the last known orientation. So if the user
-                // first orient the camera then point the camera to
-                if (orientation != ORIENTATION_UNKNOWN) {
-                    orientation += 90;
-                }
-                orientation = ImageManager.roundOrientation(orientation);
-                if (orientation != mLastOrientation) {
-                    mLastOrientation = orientation;
-                    if (!mIsImageCaptureIntent)  {
-                        setOrientationIndicator(mLastOrientation);
-                    }
-                    if (mGLRootView != null) {
-                        mGLRootView.queueEvent(new Runnable() {
-                            public void run() {
-                                mHeadUpDisplay.setOrientation(mLastOrientation);
-                            }
-                        });
-                    }
-                }
-            }
-        };
+        mOrientationListener = new MyOrientationEventListener(Camera.this);
         mOrientationListener.enable();
 
         // Initialize location sevice.
@@ -362,15 +345,16 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
         installIntentFilter();
         initializeFocusTone();
         initializeZoom();
-
+        mHeadUpDisplay = new CameraHeadUpDisplay(this);
+        mHeadUpDisplay.setListener(new MyHeadUpDisplayListener());
+        initializeHeadUpDisplay();
         mFirstTimeInitialized = true;
-
         changeHeadUpDisplayState();
         addIdleHandler();
     }
 
     private void addIdleHandler() {
-        MessageQueue queue = getMainLooper().myQueue();
+        MessageQueue queue = Looper.myQueue();
         queue.addIdleHandler(new MessageQueue.IdleHandler() {
             public boolean queueIdle() {
                 ImageManager.ensureOSXCompatibleFolder();
@@ -395,34 +379,26 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
         mOrientationListener.enable();
 
         // Start location update if needed.
-        synchronized (mPreferences) {
-            mRecordLocation = RecordLocationPreference.get(
-                    mPreferences, getContentResolver());
-        }
+        mRecordLocation = RecordLocationPreference.get(
+                mPreferences, getContentResolver());
         if (mRecordLocation) startReceivingLocationUpdates();
 
         installIntentFilter();
-
         initializeFocusTone();
+        initializeZoom();
+        changeHeadUpDisplayState();
 
         keepMediaProviderInstance();
         checkStorage();
 
-        mCameraDevice.setZoomChangeListener(mZoomListener);
-
         if (!mIsImageCaptureIntent) {
             updateThumbnailButton();
         }
-
-        changeHeadUpDisplayState();
     }
 
     private void initializeZoom() {
         if (!mParameters.isZoomSupported()) return;
 
-        // Maximum zoom value may change after preview size is set. Get the
-        // latest parameters here.
-        mParameters = mCameraDevice.getParameters();
         mZoomMax = mParameters.getMaxZoom();
         mSmoothZoomSupported = mParameters.isSmoothZoomSupported();
         mGestureDetector = new GestureDetector(this, new ZoomGestureListener());
@@ -450,21 +426,13 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
     }
 
     private float[] getZoomRatios() {
+        if(!mParameters.isZoomSupported()) return null;
         List<Integer> zoomRatios = mParameters.getZoomRatios();
-        if (zoomRatios != null) {
-            float result[] = new float[zoomRatios.size()];
-            for (int i = 0, n = result.length; i < n; ++i) {
-                result[i] = (float) zoomRatios.get(i) / 100f;
-            }
-            return result;
-        } else {
-            //1.0, 1.2, 1.44, 1.6, 1.8, 2.0
-            float result[] = new float[mZoomMax + 1];
-            for (int i = 0, n = result.length; i < n; ++i) {
-                result[i] = 1 + i * 0.2f;
-            }
-            return result;
+        float result[] = new float[zoomRatios.size()];
+        for (int i = 0, n = result.length; i < n; ++i) {
+            result[i] = (float) zoomRatios.get(i) / 100f;
         }
+        return result;
     }
 
     private class ZoomGestureListener extends
@@ -475,7 +443,7 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
             // Perform zoom only when preview is started and snapshot is not in
             // progress.
             if (mPausing || !isCameraIdle() || !mPreviewing
-                    || mHeadUpDisplay == null || mZoomState != ZOOM_STOPPED) {
+                    || mZoomState != ZOOM_STOPPED) {
                 return false;
             }
 
@@ -646,7 +614,7 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
                 // We want to show the taken picture for a while, so we wait
                 // for at least 1.2 second before restarting the preview.
                 long delay = 1200 - mPictureDisplayedToJpegCallbackTime;
-                if (delay < 0 || mQuickCapture) {
+                if (delay < 0) {
                     restartPreview();
                 } else {
                     mHandler.sendEmptyMessageDelayed(RESTART_PREVIEW, delay);
@@ -808,8 +776,18 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
         private void capture() {
             mCaptureOnlyData = null;
 
-            // Set rotation.
-            mParameters.setRotation(mLastOrientation);
+            // See android.hardware.Camera.Parameters.setRotation for
+            // documentation.
+            int rotation = 0;
+            if (mOrientation != OrientationEventListener.ORIENTATION_UNKNOWN) {
+                CameraInfo info = CameraHolder.instance().getCameraInfo()[mCameraId];
+                if (info.facing == CameraInfo.CAMERA_FACING_FRONT) {
+                    rotation = (info.orientation - mOrientation + 360) % 360;
+                } else {  // back-facing camera
+                    rotation = (info.orientation + mOrientation) % 360;
+                }
+            }
+            mParameters.setRotation(rotation);
 
             // Clear previous GPS location from the parameters.
             mParameters.removeGpsData();
@@ -909,13 +887,13 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
         setContentView(R.layout.camera);
         mSurfaceView = (SurfaceView) findViewById(R.id.camera_preview);
 
-        mPreferences = PreferenceManager.getDefaultSharedPreferences(this);
-        CameraSettings.upgradePreferences(mPreferences);
+        mPreferences = new ComboPreferences(this);
+        CameraSettings.upgradeGlobalPreferences(mPreferences.getGlobal());
+        mCameraId = CameraSettings.readPreferredCameraId(mPreferences);
+        mPreferences.setLocalId(this, mCameraId);
+        CameraSettings.upgradeLocalPreferences(mPreferences.getLocal());
 
-        mQuickCapture = getQuickCaptureSettings();
-
-        // comment out -- unused now.
-        //mQuickCapture = getQuickCaptureSettings();
+        mNumberOfCameras = CameraHolder.instance().getNumberOfCameras();
 
         // we need to reset exposure for the preview
         resetExposureCompensation();
@@ -989,30 +967,25 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
         Configuration config = getResources().getConfiguration();
         if (config.orientation == Configuration.ORIENTATION_LANDSCAPE
                 && !mPausing && mFirstTimeInitialized) {
-            if (mGLRootView == null) initializeHeadUpDisplay();
+            if (mGLRootView == null) attachHeadUpDisplay();
         } else if (mGLRootView != null) {
-            finalizeHeadUpDisplay();
+            detachHeadUpDisplay();
         }
     }
 
     private void overrideHudSettings(final String flashMode,
             final String whiteBalance, final String focusMode) {
-        mGLRootView.queueEvent(new Runnable() {
-            public void run() {
-                mHeadUpDisplay.overrideSettings(
-                        CameraSettings.KEY_FLASH_MODE, flashMode);
-                mHeadUpDisplay.overrideSettings(
-                        CameraSettings.KEY_WHITE_BALANCE, whiteBalance);
-                mHeadUpDisplay.overrideSettings(
-                        CameraSettings.KEY_FOCUS_MODE, focusMode);
-            }});        
+        mHeadUpDisplay.overrideSettings(
+                CameraSettings.KEY_FLASH_MODE, flashMode,
+                CameraSettings.KEY_WHITE_BALANCE, whiteBalance,
+                CameraSettings.KEY_FOCUS_MODE, focusMode);
     }
 
-    private void updateSceneModeInHud() {        
+    private void updateSceneModeInHud() {
         // If scene mode is set, we cannot set flash mode, white balance, and
-        // focus mode, instead, we read it from driver        
+        // focus mode, instead, we read it from driver
         if (!Parameters.SCENE_MODE_AUTO.equals(mSceneMode)) {
-            overrideHudSettings(mParameters.getFlashMode(), 
+            overrideHudSettings(mParameters.getFlashMode(),
                     mParameters.getWhiteBalance(), mParameters.getFocusMode());
         } else {
             overrideHudSettings(null, null, null);
@@ -1020,42 +993,69 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
     }
 
     private void initializeHeadUpDisplay() {
-        FrameLayout frame = (FrameLayout) findViewById(R.id.frame);
-        mGLRootView = new GLRootView(this);
-        frame.addView(mGLRootView);
-
-        mHeadUpDisplay = new CameraHeadUpDisplay(this);
-        CameraSettings settings = new CameraSettings(this, mInitialParams);
+        CameraSettings settings = new CameraSettings(this, mInitialParams,
+                CameraHolder.instance().getCameraInfo());
         mHeadUpDisplay.initialize(this,
-                settings.getPreferenceGroup(R.xml.camera_preferences));
-        mHeadUpDisplay.setListener(new MyHeadUpDisplayListener());
-        mHeadUpDisplay.setOrientation(mLastOrientation);
-
+                settings.getPreferenceGroup(R.xml.camera_preferences),
+                getZoomRatios(), mOrientationCompensation);
         if (mParameters.isZoomSupported()) {
-            mHeadUpDisplay.setZoomRatios(getZoomRatios());
-            mHeadUpDisplay.setZoomIndex(mZoomValue);
-            mHeadUpDisplay.setZoomListener(new ZoomController.ZoomListener() {
+            mHeadUpDisplay.setZoomListener(new ZoomControllerListener() {
                 public void onZoomChanged(
-                        final int index, float ratio, boolean isMoving) {
-                    mHandler.post(new Runnable() {
-                        public void run() {
-                            onZoomValueChanged(index);
-                        }
-                    });
+                        int index, float ratio, boolean isMoving) {
+                    onZoomValueChanged(index);
                 }
             });
         }
-
         updateSceneModeInHud();
-
-        mGLRootView.setContentPane(mHeadUpDisplay);
     }
 
-    private void finalizeHeadUpDisplay() {
+    private void attachHeadUpDisplay() {
+        mHeadUpDisplay.setOrientation(mOrientationCompensation);
+        if (mParameters.isZoomSupported()) {
+            mHeadUpDisplay.setZoomIndex(mZoomValue);
+        }
+        FrameLayout frame = (FrameLayout) findViewById(R.id.frame);
+        mGLRootView = new GLRootView(this);
+        mGLRootView.setContentPane(mHeadUpDisplay);
+        frame.addView(mGLRootView);
+    }
+
+    private void detachHeadUpDisplay() {
         mHeadUpDisplay.setGpsHasSignal(false);
         mHeadUpDisplay.collapse();
         ((ViewGroup) mGLRootView.getParent()).removeView(mGLRootView);
         mGLRootView = null;
+    }
+
+    public static int roundOrientation(int orientation) {
+        return ((orientation + 45) / 90 * 90) % 360;
+    }
+
+    private class MyOrientationEventListener
+            extends OrientationEventListener {
+        public MyOrientationEventListener(Context context) {
+            super(context);
+        }
+
+        @Override
+        public void onOrientationChanged(int orientation) {
+            // We keep the last known orientation. So if the user first orient
+            // the camera then point the camera to floor or sky, we still have
+            // the correct orientation.
+            if (orientation == ORIENTATION_UNKNOWN) return;
+            mOrientation = roundOrientation(orientation);
+            // When the screen is unlocked, display rotation may change. Always
+            // calculate the up-to-date orientationCompensation.
+            int orientationCompensation = mOrientation
+                    + Util.getDisplayRotation(Camera.this);
+            if (mOrientationCompensation != orientationCompensation) {
+                mOrientationCompensation = orientationCompensation;
+                if (!mIsImageCaptureIntent) {
+                    setOrientationIndicator(mOrientationCompensation);
+                }
+                mHeadUpDisplay.setOrientation(mOrientationCompensation);
+            }
+        }
     }
 
     private void setOrientationIndicator(int degree) {
@@ -1237,6 +1237,8 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
             } else {
                 noStorageText = getString(R.string.no_storage);
             }
+        } else if (remaining == MenuHelper.CANNOT_STAT_ERROR) {
+            noStorageText = getString(R.string.access_sd_fail);
         } else if (remaining < 1) {
             noStorageText = getString(R.string.not_enough_space);
         }
@@ -1303,12 +1305,7 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
         // Start the preview if it is not started.
         if (!mPreviewing && !mStartPreviewFail) {
             resetExposureCompensation();
-            try {
-                startPreview();
-            } catch (CameraHardwareException e) {
-                showCameraErrorAndFinish();
-                return;
-            }
+            if (!restartPreview()) return;
         }
 
         if (mSurfaceHolder != null) {
@@ -1421,8 +1418,8 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
 
     private void cancelAutoFocus() {
         // User releases half-pressed focus key.
-        if (mFocusState == FOCUSING || mFocusState == FOCUS_SUCCESS
-                || mFocusState == FOCUS_FAIL) {
+        if (mStatus != SNAPSHOT_IN_PROGRESS && (mFocusState == FOCUSING
+                || mFocusState == FOCUS_SUCCESS || mFocusState == FOCUS_FAIL)) {
             Log.v(TAG, "Cancel autofocus.");
             mHeadUpDisplay.setEnabled(true);
             mCameraDevice.cancelAutoFocus();
@@ -1516,6 +1513,8 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
         // can take the photo right away. If the focus mode is infinity, we can
         // also take the photo.
         if (mFocusMode.equals(Parameters.FOCUS_MODE_INFINITY)
+                || mFocusMode.equals(Parameters.FOCUS_MODE_FIXED)
+                || mFocusMode.equals(Parameters.FOCUS_MODE_EDOF)
                 || (mFocusState == FOCUS_SUCCESS
                 || mFocusState == FOCUS_FAIL)) {
             mImageCapture.onSnap();
@@ -1532,7 +1531,9 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
     private void doFocus(boolean pressed) {
         // Do the focus if the mode is not infinity.
         if (mHeadUpDisplay.collapse()) return;
-        if (!mFocusMode.equals(Parameters.FOCUS_MODE_INFINITY)) {
+        if (!(mFocusMode.equals(Parameters.FOCUS_MODE_INFINITY)
+                  || mFocusMode.equals(Parameters.FOCUS_MODE_FIXED)
+                  || mFocusMode.equals(Parameters.FOCUS_MODE_EDOF))) {
             if (pressed) {  // Focus key down.
                 autoFocus();
             } else {  // Focus key up.
@@ -1604,7 +1605,7 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
 
     private void ensureCameraDevice() throws CameraHardwareException {
         if (mCameraDevice == null) {
-            mCameraDevice = CameraHolder.instance().open();
+            mCameraDevice = CameraHolder.instance().open(mCameraId);
             mInitialParams = mCameraDevice.getParameters();
         }
     }
@@ -1634,13 +1635,14 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
                 ress.getString(R.string.cannot_connect_camera));
     }
 
-    private void restartPreview() {
+    private boolean restartPreview() {
         try {
             startPreview();
         } catch (CameraHardwareException e) {
             showCameraErrorAndFinish();
-            return;
+            return false;
         }
+        return true;
     }
 
     private void setPreviewDisplay(SurfaceHolder holder) {
@@ -1662,10 +1664,8 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
         if (mPreviewing) stopPreview();
 
         setPreviewDisplay(mSurfaceHolder);
+        Util.setCameraDisplayOrientation(this, mCameraId, mCameraDevice);
         setCameraParameters(UPDATE_PARAM_ALL);
-
-        final long wallTimeStart = SystemClock.elapsedRealtime();
-        final long threadTimeStart = Debug.threadCpuTimeNanos();
 
         mCameraDevice.setErrorCallback(mErrorCallback);
 
@@ -1784,7 +1784,15 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
         Size optimalSize = getOptimalPreviewSize(
                 sizes, (double) size.width / size.height);
         if (optimalSize != null) {
-            mParameters.setPreviewSize(optimalSize.width, optimalSize.height);
+            Size original = mParameters.getPreviewSize();
+            if (!original.equals(optimalSize)) {
+                mParameters.setPreviewSize(optimalSize.width, optimalSize.height);
+
+                // Zoom related settings will be changed for different preview
+                // sizes, so set and read the parameters to get lastest values
+                mCameraDevice.setParameters(mParameters);
+                mParameters = mCameraDevice.getParameters();
+            }
         }
 
         // Since change scene mode may change supported values,
@@ -1843,7 +1851,7 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
             Log.w(TAG, "invalid exposure: " + exposure);
         }
 
-        if (mGLRootView != null) updateSceneModeInHud();
+        if (mHeadUpDisplay != null) updateSceneModeInHud();
 
         if (Parameters.SCENE_MODE_AUTO.equals(mSceneMode)) {
             // Set flash mode.
@@ -1907,9 +1915,7 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
         }
 
         if ((updateSet & UPDATE_PARAM_PREFERENCE) != 0) {
-            synchronized (mPreferences) {
-                updateCameraParametersPreference();
-            }
+            updateCameraParametersPreference();
         }
 
         mCameraDevice.setParameters(mParameters);
@@ -1945,7 +1951,12 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
             try {
                 startActivity(intent);
             } catch (ActivityNotFoundException ex) {
-                Log.e(TAG, "review image fail", ex);
+                try {
+                    intent = new Intent(Intent.ACTION_VIEW, mThumbController.getUri());
+                    startActivity(intent);
+                } catch (ActivityNotFoundException e) {
+                    Log.e(TAG, "review image fail", e);
+                }
             }
         } else {
             Log.e(TAG, "Can't view last image.");
@@ -2085,6 +2096,49 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
         });
         gallery.setIcon(android.R.drawable.ic_menu_gallery);
         mGalleryItems.add(gallery);
+
+        if (mNumberOfCameras > 1) {
+            menu.add(Menu.NONE, Menu.NONE,
+                    MenuHelper.POSITION_SWITCH_CAMERA_ID,
+                    R.string.switch_camera_id)
+                    .setOnMenuItemClickListener(new OnMenuItemClickListener() {
+                public boolean onMenuItemClick(MenuItem item) {
+                    switchCameraId((mCameraId + 1) % mNumberOfCameras);
+                    return true;
+                }
+            }).setIcon(android.R.drawable.ic_menu_camera);
+        }
+    }
+
+    private void switchCameraId(int cameraId) {
+        if (mPausing || !isCameraIdle()) return;
+        mCameraId = cameraId;
+        CameraSettings.writePreferredCameraId(mPreferences, cameraId);
+
+        stopPreview();
+        closeCamera();
+
+        // Remove the messages in the event queue.
+        mHandler.removeMessages(RESTART_PREVIEW);
+
+        // Reset variables
+        mJpegPictureCallbackTime = 0;
+        mZoomValue = 0;
+
+        // Reload the preferences.
+        mPreferences.setLocalId(this, mCameraId);
+        CameraSettings.upgradeLocalPreferences(mPreferences.getLocal());
+
+        // Restart the preview.
+        resetExposureCompensation();
+        if (!restartPreview()) return;
+
+        initializeZoom();
+
+        // Reload the UI.
+        if (mFirstTimeInitialized) {
+            initializeHeadUpDisplay();
+        }
     }
 
     private boolean switchToVideoMode() {
@@ -2109,11 +2163,8 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
 
         boolean recordLocation;
 
-        synchronized (mPreferences) {
-            recordLocation = RecordLocationPreference.get(
-                    mPreferences, getContentResolver());
-            mQuickCapture = getQuickCaptureSettings();
-        }
+        recordLocation = RecordLocationPreference.get(
+                mPreferences, getContentResolver());
 
         if (mRecordLocation != recordLocation) {
             mRecordLocation = recordLocation;
@@ -2123,15 +2174,12 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
                 stopReceivingLocationUpdates();
             }
         }
-
-        setCameraParametersWhenIdle(UPDATE_PARAM_PREFERENCE);
-    }
-
-    private boolean getQuickCaptureSettings() {
-        String value = mPreferences.getString(
-                CameraSettings.KEY_QUICK_CAPTURE,
-                getString(R.string.pref_camera_quickcapture_default));
-        return CameraSettings.QUICK_CAPTURE_ON.equals(value);
+        int cameraId = CameraSettings.readPreferredCameraId(mPreferences);
+        if (mCameraId != cameraId) {
+            switchCameraId(cameraId);
+        } else {
+            setCameraParametersWhenIdle(UPDATE_PARAM_PREFERENCE);
+        }
     }
 
     @Override
@@ -2153,22 +2201,12 @@ public class Camera extends NoSearchActivity implements View.OnClickListener,
 
     private class MyHeadUpDisplayListener implements HeadUpDisplay.Listener {
 
-        // The callback functions here will be called from the GLThread. So,
-        // we need to post these runnables to the main thread
         public void onSharedPreferencesChanged() {
-            mHandler.post(new Runnable() {
-                public void run() {
-                    Camera.this.onSharedPreferenceChanged();
-                }
-            });
+            Camera.this.onSharedPreferenceChanged();
         }
 
         public void onRestorePreferencesClicked() {
-            mHandler.post(new Runnable() {
-                public void run() {
-                    Camera.this.onRestorePreferencesClicked();
-                }
-            });
+            Camera.this.onRestorePreferencesClicked();
         }
 
         public void onPopupWindowVisibilityChanged(int visibility) {

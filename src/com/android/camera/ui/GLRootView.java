@@ -20,13 +20,11 @@ import com.android.camera.Util;
 
 import android.app.Activity;
 import android.content.Context;
+import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.PixelFormat;
 import android.opengl.GLSurfaceView;
 import android.opengl.GLU;
-import android.os.ConditionVariable;
-import android.os.Looper;
-import android.os.Process;
 import android.os.SystemClock;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
@@ -39,14 +37,20 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Stack;
-import java.util.concurrent.Callable;
-import java.util.concurrent.FutureTask;
 
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
 import javax.microedition.khronos.opengles.GL11;
 import javax.microedition.khronos.opengles.GL11Ext;
 
+// The root component of all <code>GLView</code>s. The rendering is done in GL
+// thread while the event handling is done in the main thread.  To synchronize
+// the two threads, the entry points of this package need to synchronize on the
+// <code>GLRootView</code> instance unless it can be proved that the rendering
+// thread won't access the same thing as the method. The entry points include:
+// (1) The public methods of HeadUpDisplay
+// (2) The public methods of CameraHeadUpDisplay
+// (3) The overridden methods in GLRootView.
 public class GLRootView extends GLSurfaceView
         implements GLSurfaceView.Renderer {
     private static final String TAG = "GLRootView";
@@ -55,10 +59,16 @@ public class GLRootView extends GLSurfaceView
     private int mFrameCount = 0;
     private long mFrameCountingStart = 0;
 
-    private static final int VERTEX_BUFFER_SIZE = 8;
+    // We need 16 vertices for a normal nine-patch image (the 4x4 vertices)
+    private static final int VERTEX_BUFFER_SIZE = 16 * 2;
+
+    // We need 22 indices for a normal nine-patch image
+    private static final int INDEX_BUFFER_SIZE = 22;
 
     private static final int FLAG_INITIALIZED = 1;
     private static final int FLAG_NEED_LAYOUT = 2;
+
+    private static boolean mTexture2DEnabled;
 
     private static float sPixelDensity = -1f;
 
@@ -79,24 +89,23 @@ public class GLRootView extends GLSurfaceView
 
     private final float mMatrixValues[] = new float[16];
 
-    private final float mCoordBuffer[] = new float[8];
-    private final float mPointBuffer[] = new float[4];
+    private final float mUvBuffer[] = new float[VERTEX_BUFFER_SIZE];
+    private final float mXyBuffer[] = new float[VERTEX_BUFFER_SIZE];
+    private final byte mIndexBuffer[] = new byte[INDEX_BUFFER_SIZE];
 
-    private ByteBuffer mVertexBuffer;
-    private ByteBuffer mTexCoordBuffer;
+    private int mNinePatchX[] = new int[4];
+    private int mNinePatchY[] = new int[4];
+    private float mNinePatchU[] = new float[4];
+    private float mNinePatchV[] = new float[4];
+
+    private ByteBuffer mXyPointer;
+    private ByteBuffer mUvPointer;
+    private ByteBuffer mIndexPointer;
 
     private int mFlags = FLAG_NEED_LAYOUT;
     private long mAnimationTime;
 
-    private Thread mGLThread;
-
-    private boolean mIsQueueActive = true;
-
-    private int mFirstWidth;
-    private int mFirstHeight;
-
-    // TODO: move this part (handler) into GLSurfaceView
-    private final Looper mLooper;
+    private CameraEGLConfigChooser mEglConfigChooser = new CameraEGLConfigChooser();
 
     public GLRootView(Context context) {
         this(context, null);
@@ -105,7 +114,6 @@ public class GLRootView extends GLSurfaceView
     public GLRootView(Context context, AttributeSet attrs) {
         super(context, attrs);
         initialize();
-        mLooper = Looper.getMainLooper();
     }
 
     void registerLaunchedAnimation(Animation animation) {
@@ -164,31 +172,26 @@ public class GLRootView extends GLSurfaceView
         freeTransformation(trans);
     }
 
-    public void runInGLThread(Runnable runnable) {
-        if (Thread.currentThread() == mGLThread) {
-            runnable.run();
-        } else {
-            queueEvent(runnable);
-        }
+    public CameraEGLConfigChooser getEGLConfigChooser() {
+        return mEglConfigChooser;
+    }
+
+    private static ByteBuffer allocateDirectNativeOrderBuffer(int size) {
+        return ByteBuffer.allocateDirect(size).order(ByteOrder.nativeOrder());
     }
 
     private void initialize() {
         mFlags |= FLAG_INITIALIZED;
-        setEGLConfigChooser(8, 8, 8, 8, 0, 4);
+        setEGLConfigChooser(mEglConfigChooser);
         getHolder().setFormat(PixelFormat.TRANSLUCENT);
         setZOrderOnTop(true);
 
         setRenderer(this);
 
-        mVertexBuffer = ByteBuffer
-                .allocateDirect(VERTEX_BUFFER_SIZE * Float.SIZE / Byte.SIZE)
-                .order(ByteOrder.nativeOrder());
-        mVertexBuffer.asFloatBuffer()
-                .put(new float[] {0, 0, 1, 0, 0, 1, 1, 1})
-                .position(0);
-        mTexCoordBuffer = ByteBuffer
-                .allocateDirect(VERTEX_BUFFER_SIZE * Float.SIZE / Byte.SIZE)
-                .order(ByteOrder.nativeOrder());
+        int size = VERTEX_BUFFER_SIZE * Float.SIZE / Byte.SIZE;
+        mXyPointer = allocateDirectNativeOrderBuffer(size);
+        mUvPointer = allocateDirectNativeOrderBuffer(size);
+        mIndexPointer = allocateDirectNativeOrderBuffer(INDEX_BUFFER_SIZE);
     }
 
     public void setContentPane(GLView content) {
@@ -253,10 +256,6 @@ public class GLRootView extends GLSurfaceView
             setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
         }
 
-        // Increase the priority of the render thread
-        Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY);
-        mGLThread = Thread.currentThread();
-
         // Disable unused state
         gl.glDisable(GL11.GL_LIGHTING);
 
@@ -267,6 +266,7 @@ public class GLRootView extends GLSurfaceView
         gl.glEnableClientState(GL10.GL_VERTEX_ARRAY);
         gl.glEnableClientState(GL10.GL_TEXTURE_COORD_ARRAY);
         gl.glEnable(GL11.GL_TEXTURE_2D);
+        mTexture2DEnabled = true;
 
         gl.glTexEnvf(GL11.GL_TEXTURE_ENV,
                 GL11.GL_TEXTURE_ENV_MODE, GL11.GL_REPLACE);
@@ -274,8 +274,10 @@ public class GLRootView extends GLSurfaceView
         // Set the background color
         gl.glClearColor(0f, 0f, 0f, 0f);
         gl.glClearStencil(0);
-        gl.glVertexPointer(2, GL11.GL_FLOAT, 0, mVertexBuffer);
-        gl.glTexCoordPointer(2, GL11.GL_FLOAT, 0, mTexCoordBuffer);
+
+        gl.glVertexPointer(2, GL11.GL_FLOAT, 0, mXyPointer);
+        gl.glTexCoordPointer(2, GL11.GL_FLOAT, 0, mUvPointer);
+
     }
 
     /**
@@ -318,31 +320,213 @@ public class GLRootView extends GLSurfaceView
     public void drawRect(int x, int y, int width, int height) {
         float matrix[] = mMatrixValues;
         mTransformation.getMatrix().getValues(matrix);
-        drawRect(x, y, width, height, matrix, mTransformation.getAlpha());
+        drawRect(x, y, width, height, matrix);
+    }
+
+    private static void putRectangle(float x, float y,
+            float width, float height, float[] buffer, ByteBuffer pointer) {
+        buffer[0] = x;
+        buffer[1] = y;
+        buffer[2] = x + width;
+        buffer[3] = y;
+        buffer[4] = x;
+        buffer[5] = y + height;
+        buffer[6] = x + width;
+        buffer[7] = y + height;
+        pointer.asFloatBuffer().put(buffer, 0, 8).position(0);
     }
 
     private void drawRect(
-            int x, int y, int width, int height, float matrix[], float alpha) {
+            int x, int y, int width, int height, float matrix[]) {
         GL11 gl = mGL;
         gl.glPushMatrix();
-        setAlphaValue(alpha);
         gl.glMultMatrixf(toGLMatrix(matrix), 0);
-        gl.glTranslatef(x, y, 0);
-        gl.glScalef(width, height, 1);
+        putRectangle(x, y, width, height, mXyBuffer, mXyPointer);
         gl.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
         gl.glPopMatrix();
     }
 
-    public void drawRect(int x, int y, int width, int height, float alpha) {
-        float matrix[] = mMatrixValues;
-        mTransformation.getMatrix().getValues(matrix);
-        drawRect(x, y, width, height, matrix, alpha);
+    public void drawNinePatch(
+            NinePatchTexture tex, int x, int y, int width, int height) {
+
+        NinePatchChunk chunk = tex.getNinePatchChunk();
+
+        // The code should be easily extended to handle the general cases by
+        // allocating more space for buffers. But let's just handle the only
+        // use case.
+        if (chunk.mDivX.length != 2 || chunk.mDivY.length != 2) {
+            throw new RuntimeException("unsupported nine patch");
+        }
+        if (!tex.bind(this, mGL)) {
+            throw new RuntimeException("cannot bind" + tex.toString());
+        }
+        if (width <= 0 || height <= 0) return ;
+
+        int divX[] = mNinePatchX;
+        int divY[] = mNinePatchY;
+        float divU[] = mNinePatchU;
+        float divV[] = mNinePatchV;
+
+        int nx = stretch(divX, divU, chunk.mDivX, tex.getWidth(), width);
+        int ny = stretch(divY, divV, chunk.mDivY, tex.getHeight(), height);
+
+        setAlphaValue(mTransformation.getAlpha());
+        Matrix matrix = mTransformation.getMatrix();
+        matrix.getValues(mMatrixValues);
+        GL11 gl = mGL;
+        gl.glPushMatrix();
+        gl.glMultMatrixf(toGLMatrix(mMatrixValues), 0);
+        gl.glTranslatef(x, y, 0);
+        drawMesh(divX, divY, divU, divV, nx, ny);
+        gl.glPopMatrix();
+    }
+
+    /**
+     * Stretches the texture according to the nine-patch rules. It will
+     * linearly distribute the strechy parts defined in the nine-patch chunk to
+     * the target area.
+     *
+     * <pre>
+     *                      source
+     *          /--------------^---------------\
+     *         u0    u1       u2  u3     u4   u5
+     * div ---> |fffff|ssssssss|fff|ssssss|ffff| ---> u
+     *          |    div0    div1 div2   div3  |
+     *          |     |       /   /      /    /
+     *          |     |      /   /     /    /
+     *          |     |     /   /    /    /
+     *          |fffff|ssss|fff|sss|ffff| ---> x
+     *         x0    x1   x2  x3  x4   x5
+     *          \----------v------------/
+     *                  target
+     *
+     * f: fixed segment
+     * s: stretchy segment
+     * </pre>
+     *
+     * @param div the stretch parts defined in nine-patch chunk
+     * @param source the length of the texture
+     * @param target the length on the drawing plan
+     * @param u output, the positions of these dividers in the texture
+     *        coordinate
+     * @param x output, the corresponding position of these dividers on the
+     *        drawing plan
+     * @return the number of these dividers.
+     */
+    private int stretch(
+            int x[], float u[], int div[], int source, int target) {
+        int textureSize = Util.nextPowerOf2(source);
+        float textureBound = (source - 0.5f) / textureSize;
+
+        int stretch = 0;
+        for (int i = 0, n = div.length; i < n; i += 2) {
+            stretch += div[i + 1] - div[i];
+        }
+
+        float remaining = target - source + stretch;
+
+        int lastX = 0;
+        int lastU = 0;
+
+        x[0] = 0;
+        u[0] = 0;
+        for (int i = 0, n = div.length; i < n; i += 2) {
+            // fixed segment
+            x[i + 1] = lastX + (div[i] - lastU);
+            u[i + 1] = Math.min((float) div[i] / textureSize, textureBound);
+
+            // stretchy segment
+            float partU = div[i + 1] - div[i];
+            int partX = (int)(remaining * partU / stretch + 0.5f);
+            remaining -= partX;
+            stretch -= partU;
+
+            lastX = x[i + 1] + partX;
+            lastU = div[i + 1];
+            x[i + 2] = lastX;
+            u[i + 2] = Math.min((float) lastU / textureSize, textureBound);
+        }
+        // the last fixed segment
+        x[div.length + 1] = target;
+        u[div.length + 1] = textureBound;
+
+        // remove segments with length 0.
+        int last = 0;
+        for (int i = 1, n = div.length + 2; i < n; ++i) {
+            if (x[last] == x[i]) continue;
+            x[++last] = x[i];
+            u[last] = u[i];
+        }
+        return last + 1;
+    }
+
+    private void drawMesh(
+            int x[], int y[], float u[], float v[], int nx, int ny) {
+        /*
+         * Given a 3x3 nine-patch image, the vertex order is defined as the
+         * following graph:
+         *
+         * (0) (1) (2) (3)
+         *  |  /|  /|  /|
+         *  | / | / | / |
+         * (4) (5) (6) (7)
+         *  | \ | \ | \ |
+         *  |  \|  \|  \|
+         * (8) (9) (A) (B)
+         *  |  /|  /|  /|
+         *  | / | / | / |
+         * (C) (D) (E) (F)
+         *
+         * And we draw the triangle strip in the following index order:
+         *
+         * index: 04152637B6A5948C9DAEBF
+         */
+        int pntCount = 0;
+        float xy[] = mXyBuffer;
+        float uv[] = mUvBuffer;
+        for (int j = 0; j < ny; ++j) {
+            for (int i = 0; i < nx; ++i) {
+                int xIndex = (pntCount++) << 1;
+                int yIndex = xIndex + 1;
+                xy[xIndex] = x[i];
+                xy[yIndex] = y[j];
+                uv[xIndex] = u[i];
+                uv[yIndex] = v[j];
+            }
+        }
+        mUvPointer.asFloatBuffer().put(uv, 0, pntCount << 1).position(0);
+        mXyPointer.asFloatBuffer().put(xy, 0, pntCount << 1).position(0);
+
+        int idxCount = 1;
+        byte index[] = mIndexBuffer;
+        for (int i = 0, bound = nx * (ny - 1); true;) {
+            // normal direction
+            --idxCount;
+            for (int j = 0; j < nx; ++j, ++i) {
+                index[idxCount++] = (byte) i;
+                index[idxCount++] = (byte) (i + nx);
+            }
+            if (i >= bound) break;
+
+            // reverse direction
+            int sum = i + i + nx - 1;
+            --idxCount;
+            for (int j = 0; j < nx; ++j, ++i) {
+                index[idxCount++] = (byte) (sum - i);
+                index[idxCount++] = (byte) (sum - i + nx);
+            }
+            if (i >= bound) break;
+        }
+        mIndexPointer.put(index, 0, idxCount).position(0);
+
+        mGL.glDrawElements(GL11.GL_TRIANGLE_STRIP,
+                idxCount, GL11.GL_UNSIGNED_BYTE, mIndexPointer);
     }
 
     private float[] mapPoints(Matrix matrix, int x1, int y1, int x2, int y2) {
-        float[] point = mPointBuffer;
+        float[] point = mXyBuffer;
         point[0] = x1; point[1] = y1; point[2] = x2; point[3] = y2;
-        matrix.mapPoints(point);
+        matrix.mapPoints(point, 0, point, 0, 4);
         return point;
     }
 
@@ -381,8 +565,34 @@ public class GLRootView extends GLSurfaceView
         return v;
     }
 
+    public void drawColor(int x, int y, int width, int height, int color) {
+        float alpha = mTransformation.getAlpha();
+        GL11 gl = mGL;
+        if (mTexture2DEnabled) {
+            // Set mLastAlpha to an invalid value, so that it will reset again
+            // in setAlphaValue(float) later.
+            mLastAlpha = -1.0f;
+            gl.glDisable(GL11.GL_TEXTURE_2D);
+            mTexture2DEnabled = false;
+        }
+        alpha /= 256.0f;
+        gl.glColor4f(Color.red(color) * alpha, Color.green(color) * alpha,
+                Color.blue(color) * alpha, Color.alpha(color) * alpha);
+        drawRect(x, y, width, height);
+    }
+
     public void drawTexture(
-            Texture texture, int x, int y, int width, int height, float alpha) {
+            BasicTexture texture, int x, int y, int width, int height) {
+        drawTexture(texture, x, y, width, height, mTransformation.getAlpha());
+    }
+
+    public void drawTexture(BasicTexture texture,
+            int x, int y, int width, int height, float alpha) {
+
+        if (!mTexture2DEnabled) {
+            mGL.glEnable(GL11.GL_TEXTURE_2D);
+            mTexture2DEnabled = true;
+        }
 
         if (!texture.bind(this, mGL)) {
             throw new RuntimeException("cannot bind" + texture.toString());
@@ -395,9 +605,12 @@ public class GLRootView extends GLSurfaceView
         // Test whether it has been rotated or flipped, if so, glDrawTexiOES
         // won't work
         if (isMatrixRotatedOrFlipped(mMatrixValues)) {
-            texture.getTextureCoords(mCoordBuffer, 0);
-            mTexCoordBuffer.asFloatBuffer().put(mCoordBuffer).position(0);
-            drawRect(x, y, width, height, mMatrixValues, alpha);
+            putRectangle(0, 0,
+                    (texture.mWidth - 0.5f) / texture.mTextureWidth,
+                    (texture.mHeight - 0.5f) / texture.mTextureHeight,
+                    mUvBuffer, mUvPointer);
+            setAlphaValue(alpha);
+            drawRect(x, y, width, height, mMatrixValues);
         } else {
             // draw the rect from bottom-left to top-right
             float points[] = mapPoints(matrix, x, y + height, x + width, y);
@@ -417,13 +630,7 @@ public class GLRootView extends GLSurfaceView
                 || matrix[Matrix.MSCALE_X] < 0 || matrix[Matrix.MSCALE_Y] > 0;
     }
 
-    public void drawTexture(
-            Texture texture, int x, int y, int width, int height) {
-        drawTexture(texture, x, y, width, height, mTransformation.getAlpha());
-    }
-
-    // This is a GLSurfaceView.Renderer callback
-    public void onDrawFrame(GL10 gl) {
+    public synchronized void onDrawFrame(GL10 gl) {
         if (ENABLE_FPS_TEST) {
             long now = System.nanoTime();
             if (mFrameCountingStart == 0) {
@@ -455,31 +662,11 @@ public class GLRootView extends GLSurfaceView
     }
 
     @Override
-    public boolean dispatchTouchEvent(MotionEvent event) {
+    public synchronized boolean dispatchTouchEvent(MotionEvent event) {
         // If this has been detached from root, we don't need to handle event
-        if (!mIsQueueActive) return false;
-        FutureTask<Boolean> task = new FutureTask<Boolean>(
-                new TouchEventHandler(event));
-        queueEventOrThrowException(task);
-        try {
-            return task.get();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private class TouchEventHandler implements Callable<Boolean> {
-
-        private final MotionEvent mEvent;
-
-        public TouchEventHandler(MotionEvent event) {
-            mEvent = event;
-        }
-
-        public Boolean call() throws Exception {
-            if (mContentView == null) return false;
-            return mContentView.dispatchTouchEvent(mEvent);
-        }
+        return mContentView != null
+                ? mContentView.dispatchTouchEvent(event)
+                : false;
     }
 
     public DisplayMetrics getDisplayMetrics() {
@@ -538,35 +725,7 @@ public class GLRootView extends GLSurfaceView
         }
 
         texture.setSize(width, height);
-        texture.setTexCoordSize(
-                (float) width / newWidth, (float) height / newHeight);
+        texture.setTextureSize(newWidth, newHeight);
     }
 
-    public synchronized void queueEventOrThrowException(Runnable runnable) {
-        if (!mIsQueueActive) {
-            throw new IllegalStateException("GLThread has exit");
-        }
-        super.queueEvent(runnable);
-    }
-
-    @Override
-    protected void onDetachedFromWindow() {
-        final ConditionVariable var = new ConditionVariable();
-        synchronized (this) {
-            mIsQueueActive = false;
-            queueEvent(new Runnable() {
-                public void run() {
-                    var.open();
-                }
-            });
-        }
-
-        // Make sure all the runnables in the event queue is executed.
-        var.block();
-        super.onDetachedFromWindow();
-    }
-
-    protected Looper getTimerLooper() {
-        return mLooper;
-    }
 }

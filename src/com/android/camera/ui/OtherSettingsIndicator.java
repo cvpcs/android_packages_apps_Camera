@@ -23,7 +23,8 @@ import com.android.camera.R;
 
 import java.util.HashMap;
 
-public class OtherSettingsIndicator extends AbstractIndicator {
+class OtherSettingsIndicator extends AbstractIndicator {
+    private static final int COLOR_OPTION_ITEM_HIGHLIGHT = 0xFF181818;
 
     private final ListPreference mPreference[];
     private final GLListView.Model mAdapters[];
@@ -97,8 +98,8 @@ public class OtherSettingsIndicator extends AbstractIndicator {
         if (mPopupContent == null) {
             Context context = getGLRootView().getContext();
             mPopupContent = new GLListView(context);
-            mPopupContent.setHighLight(new NinePatchTexture(
-                    context, R.drawable.optionitem_highlight));
+            mPopupContent.setHighLight(
+                    new ColorTexture(COLOR_OPTION_ITEM_HIGHLIGHT));
             mPopupContent.setScroller(new NinePatchTexture(
                     context, R.drawable.scrollbar_handle_vertical));
             UberAdapter adapter = buildUberAdapter();

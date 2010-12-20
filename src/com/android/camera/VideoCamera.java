@@ -324,8 +324,9 @@ public class VideoCamera extends NoSearchActivity
 
                 case RELOAD_HUD: {
                     if (mHeadUpDisplay != null) {
-                        finalizeHeadUpDisplay();
+                        detachHeadUpDisplay();
                         initializeHeadUpDisplay();
+                        attachHeadUpDisplay();
                     }
                     break;
                 }
@@ -836,11 +837,6 @@ public class VideoCamera extends NoSearchActivity
                 mMaxVideoDurationInMs = 60000 * minutes;
             }
         }
-
-        mProfile = CamcorderProfile.get(mCameraId,
-                videoQualityHigh
-                ? CamcorderProfile.QUALITY_HIGH
-                : CamcorderProfile.QUALITY_LOW);
 
         updateProfileInHud();
     }
